@@ -1,0 +1,350 @@
+name: ocfilo Portable Fleet Worker (pilot)
+on:
+  workflow_dispatch:
+    inputs:
+      manifest_json:
+        description: 'Reviewed non-secret task manifest'
+        required: true
+        type: string
+      run_mode:
+        description: 'config-only performs no model call'
+        type: choice
+        required: true
+        default: config-only
+        options:
+          - config-only
+          - execute
+          - telemetry-probe
+permissions:
+  contents: read
+
+env:
+  PYTHONDONTWRITEBYTECODE: '1'
+jobs:
+  validate:
+    if: github.repository == (vars.FLEET_WORKER_REPOSITORY || 'oaslananka-dev/oc-test') && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    outputs:
+      target: ${{ steps.contract.outputs.target }}
+      sha: ${{ steps.contract.outputs.sha }}
+      model: ${{ steps.contract.outputs.model }}
+      profile: ${{ steps.contract.outputs.profile }}
+      task_id: ${{ steps.contract.outputs.task_id }}
+      allowlist: ${{ steps.contract.outputs.allowlist }}
+      tool_profile_b64: ${{ steps.contract.outputs.tool_profile_b64 }}
+      telemetry_url: ${{ steps.contract.outputs.telemetry_url }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4
+      - name: Validate task contract
+        id: contract
+        env:
+          FLEET_MANIFEST_JSON: ${{ inputs.manifest_json }}
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          FLEET_TOOL_PROFILE: ${{ fromJSON(inputs.manifest_json).tool_profile }}
+        run: |
+          set -euo pipefail
+          : "${DOPPLER_TOKEN:?DOPPLER_TOKEN GitHub bootstrap secret is required}"
+          export FLEET_ALLOWED_REPOS="$(doppler secrets get FLEET_ALLOWED_REPOS --plain)"
+          test -n "$FLEET_ALLOWED_REPOS" || { echo 'Approved repository configuration missing' >&2; exit 1; }
+          case "$FLEET_ALLOWED_REPOS" in
+            ''|*[!a-zA-Z0-9_./,-]*) echo 'Invalid repository routing configuration' >&2; exit 1 ;;
+          esac
+          printf 'allowlist=%s\n' "$FLEET_ALLOWED_REPOS" >> "$GITHUB_OUTPUT"
+          if [ -n "$FLEET_TOOL_PROFILE" ]; then
+            export FLEET_TOOL_CATALOG="$(doppler secrets get FLEET_TOOL_PROFILES --plain)"
+            test -n "$FLEET_TOOL_CATALOG" || { echo 'Named tool profiles missing in Doppler' >&2; exit 1; }
+          fi
+          telemetry_url=""
+          if candidate="$(doppler secrets get FLEET_TELEMETRY_URL --plain 2>/dev/null)"; then
+            if [ -n "$candidate" ]; then
+              [[ "$candidate" =~ ^https://[a-zA-Z0-9._:-]+/[a-zA-Z0-9_/-]+$ ]] || {
+                echo 'Invalid HTTPS telemetry endpoint' >&2; exit 1;
+              }
+              telemetry_url="$candidate"
+            fi
+          fi
+          printf 'telemetry_url=%s\n' "$telemetry_url" >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/oc_fleet_tools.py select >> "$GITHUB_OUTPUT"
+          python3 .github/scripts/oc_fleet_contract.py validate
+      - name: Register selected internal progress
+        if: (inputs.run_mode == 'execute' || inputs.run_mode == 'telemetry-probe') && fromJSON(inputs.manifest_json).multica_issue
+        continue-on-error: true
+        env:
+          FLEET_TELEMETRY_URL: ${{ steps.contract.outputs.telemetry_url }}
+          FLEET_MULTICA_ISSUE: ${{ fromJSON(inputs.manifest_json).multica_issue }}
+        run: |
+          set -euo pipefail
+          test -n "$FLEET_TELEMETRY_URL" || {
+            echo 'Internal progress requested but telemetry is disabled' >&2
+            exit 2
+          }
+          python3 .github/scripts/oc_fleet_telemetry.py register "$FLEET_MULTICA_ISSUE"
+  execute:
+    needs: validate
+    if: inputs.run_mode == 'execute'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.sha }}
+          path: runner
+          persist-credentials: false
+      - uses: actions/checkout@v5
+        with:
+          repository: ${{ needs.validate.outputs.target }}
+          ref: ${{ needs.validate.outputs.sha }}
+          token: ${{ secrets.FLEET_CHECKOUT_TOKEN || github.token }}
+          path: target
+          persist-credentials: false
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Install pinned OpenCode
+        run: |
+          set -euo pipefail
+          npm install --global '@opencode/cli@2.0.27'
+          opencode --version
+      - uses: actions/setup-python@v6
+        if: needs.validate.outputs.profile == 'python-ruff'
+        with:
+          python-version: '3.12'
+      - uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7
+        if: needs.validate.outputs.profile == 'python-ruff'
+        with:
+          version: '0.12.21'
+          enable-cache: false
+      - name: Prepare locked Python project environment
+        if: needs.validate.outputs.profile == 'python-ruff'
+        working-directory: target
+        run: |
+          set -euo pipefail
+          if [ -f uv.lock ] && [ -f pyproject.toml ]; then
+            uv sync --locked --extra dev --no-install-project --no-build
+          fi
+      - name: Prepare selected tool profile
+        env:
+          FLEET_TOOL_PROFILE_B64: ${{ needs.validate.outputs.tool_profile_b64 }}
+        run: |
+          set -euo pipefail
+          python3 runner/.github/scripts/oc_fleet_tools.py prepare
+      - name: Install reviewed profile tools
+        env:
+          FLEET_PROFILE: ${{ needs.validate.outputs.profile }}
+        run: |
+          set -euo pipefail
+          case "$FLEET_PROFILE" in
+            base) ;;
+            python-ruff) pipx install 'ruff==0.13.1' ;;
+            security-semgrep) pipx install 'semgrep==1.141.0' ;;
+            *) exit 3 ;;
+          esac
+      - name: Install selected vetted analyzer
+        env:
+          FLEET_MANIFEST_JSON: ${{ inputs.manifest_json }}
+        run: |
+          set -euo pipefail
+          if python3 -c 'import json,os,sys;sys.exit(0 if "codacy" in json.loads(os.environ["FLEET_MANIFEST_JSON"]).get("integrations", []) else 1)'; then
+            pipx install 'lizard==1.24.1'
+            npm install --global '@codacy/analysis-cli@0.24.0'
+            codacy-analysis --version
+          fi
+      - name: Install Doppler CLI
+        uses: dopplerhq/cli-action@4819d808ab99e5cde19a0637a16536a4038fad73 # v4
+      - name: Retrieve selected configuration from Doppler
+        if: contains(fromJSON(inputs.manifest_json).integrations, 'context7')
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+          FLEET_TOOL_PROFILE: ${{ fromJSON(inputs.manifest_json).tool_profile }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${DOPPLER_TOKEN:?DOPPLER_TOKEN GitHub bootstrap secret is required}"
+          umask 077
+          doppler secrets get CONTEXT7_API_KEY --plain > "$RUNNER_TEMP/context7.key"
+          test -s "$RUNNER_TEMP/context7.key" || { echo 'Context7 configuration unavailable' >&2; exit 1; }
+          echo 'Selected Doppler configuration resolved'
+      - name: Load selected tool credentials from Doppler
+        env:
+          DOPPLER_TOKEN: ${{ secrets.DOPPLER_TOKEN }}
+        run: |
+          set -euo pipefail
+          names="$RUNNER_TEMP/fleet-selected-tools/secrets.txt"
+          if [ -s "$names" ]; then
+            : "${DOPPLER_TOKEN:?DOPPLER_TOKEN bootstrap secret required}"
+            umask 077
+            file="$RUNNER_TEMP/fleet-selected-tools/credential.env"
+            : > "$file"
+            while IFS= read -r key; do
+              [[ "$key" =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || exit 2
+              value="$(doppler secrets get "$key" --plain)"
+              test -n "$value" || { echo 'Required tool credential missing' >&2; exit 1; }
+              [[ "$value" != *$'\\n'* && "$value" != *$'\\r'* ]] || { echo 'Unsupported multiline tool credential' >&2; exit 1; }
+              echo "::add-mask::$value"
+              printf '%s=%s\n' "$key" "$(printf %s "$value" | base64 -w0)" >> "$file"
+            done < "$names"
+          fi
+      - name: Execute unprivileged temporary agent
+        id: agent
+        working-directory: target
+        env:
+          FLEET_MANIFEST_JSON: ${{ inputs.manifest_json }}
+          FLEET_TELEMETRY_URL: ${{ needs.validate.outputs.telemetry_url }}
+          FLEET_MODEL: ${{ needs.validate.outputs.model }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import json,os
+          from pathlib import Path
+          m=json.loads(os.environ["FLEET_MANIFEST_JSON"])
+          p=(m["prompt"]+"\nAllowed paths: "+", ".join(m["allowed_paths"])
+             +"\nDo not commit, push, merge, switch branches, disclose credentials or edit workflow files."
+             +"\nRun relevant tests."
+             +("\nContext7 docs tools enabled." if "context7" in m.get("integrations", []) else "")
+             +("\nCodacy analyzer available." if "codacy" in m.get("integrations", []) else ""))
+          Path(os.environ["RUNNER_TEMP"],"fleet-prompt.txt").write_text(p,encoding="utf-8")
+          PY
+          # No Doppler service token is provided to OpenCode. Load only the
+          # requested scoped key and remove the temporary file before the model runs.
+          if [ -f "$RUNNER_TEMP/context7.key" ]; then
+            export CONTEXT7_API_KEY="$(cat "$RUNNER_TEMP/context7.key")"
+            rm -f "$RUNNER_TEMP/context7.key"
+          fi
+          # Only selected credentials reach the temporary tool process.
+          # The Doppler service token is restricted to the trusted retrieval step.
+          if [ -f "$RUNNER_TEMP/fleet-selected-tools/credential.env" ]; then
+            while IFS='=' read -r key encoded; do
+              [[ "$key" =~ ^[A-Z][A-Z0-9_]{0,63}$ ]] || exit 2
+              export "$key=$(printf %s "$encoded" | base64 --decode)"
+            done < "$RUNNER_TEMP/fleet-selected-tools/credential.env"
+            rm -f "$RUNNER_TEMP/fleet-selected-tools/credential.env"
+          fi
+          # Use an explicit ephemeral config, consistent with the proven F2 pilot.
+          # This stays outside the target git worktree and contains no credentials.
+          export OPENCODE_CONFIG_CONTENT="$(python3 - <<'PY'
+          import json, os
+          m=json.loads(os.environ["FLEET_MANIFEST_JSON"])
+          cfg={
+              "$schema": "https://opencode.ai/config.json",
+              "model": os.environ["FLEET_MODEL"],
+              "default_agent": "build",
+              "share": "disabled",
+          }
+          if "context7" in m.get("integrations", []):
+              if not os.getenv("CONTEXT7_API_KEY"):
+                  raise SystemExit("Context7 selected but Doppler configuration missing")
+              cfg["plugins"] = ["@upstash/context7-opencode@0.2.1"]
+          from pathlib import Path
+          selected=Path(os.environ["RUNNER_TEMP"])/"fleet-selected-tools"/"config.json"
+          extension=json.loads(selected.read_text(encoding="utf-8"))
+          if extension.get("plugins"):
+              cfg["plugins"] = list(dict.fromkeys(cfg.get("plugins",[])+extension["plugins"]))
+          if extension.get("mcp"):
+              cfg["mcp"]=extension["mcp"]
+          if extension.get("skills"):
+              cfg["skills"]=extension["skills"]
+          # OpenCode v2 currently has no LSP runtime; Ruff/mypy are authoritative.
+          print(json.dumps(cfg, separators=(",", ":")))
+          PY
+          )"
+          opencode debug config > "$RUNNER_TEMP/fleet-resolved-config.json"
+          start=$SECONDS
+          set +e
+          if [ -n "$FLEET_TELEMETRY_URL" ]; then
+            # OIDC available only to the observer, not the model process.
+            timeout --signal=TERM --kill-after=15s 1200s \
+                env -u ACTIONS_ID_TOKEN_REQUEST_URL -u ACTIONS_ID_TOKEN_REQUEST_TOKEN \
+                opencode run --standalone --model "$FLEET_MODEL" --agent build --format json \
+                "$(cat "$RUNNER_TEMP/fleet-prompt.txt")" \
+                2> "$RUNNER_TEMP/fleet-agent.log" \
+              | python3 "$GITHUB_WORKSPACE/runner/.github/scripts/oc_fleet_telemetry.py" \
+                2>> "$RUNNER_TEMP/fleet-agent.log"
+            stage_status=("${PIPESTATUS[@]}")
+            rc=${stage_status[0]}
+            if [ "${stage_status[1]}" -ne 0 ]; then
+              echo 'Telemetry observer exited unsuccessfully; code task status unaffected.' >> "$GITHUB_STEP_SUMMARY"
+            fi
+          else
+            timeout --signal=TERM --kill-after=15s 1200s \
+                opencode run --standalone --model "$FLEET_MODEL" --agent build --format default \
+                "$(cat "$RUNNER_TEMP/fleet-prompt.txt")" \
+                > "$RUNNER_TEMP/fleet-agent.log" 2>&1
+            rc=$?
+          fi
+          set -e
+          echo "exit_code=$rc" >> "$GITHUB_OUTPUT"
+          echo "seconds=$((SECONDS - start))" >> "$GITHUB_OUTPUT"
+          if [ "$rc" -eq 0 ]; then
+            echo 'ok=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ok=false' >> "$GITHUB_OUTPUT"
+            category=AGENT_ERROR
+            if [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+              category=TIMEOUT
+            elif grep -Eqi 'quota|insufficient.*credits|billing|payment required|402' "$RUNNER_TEMP/fleet-agent.log"; then
+              category=QUOTA
+            elif grep -Eqi '429|rate.limit|too many requests' "$RUNNER_TEMP/fleet-agent.log"; then
+              category=RATE_LIMIT
+            elif grep -Eqi 'free tier can only|403|forbidden' "$RUNNER_TEMP/fleet-agent.log"; then
+              category=PROVIDER_ACCESS
+            elif grep -Eqi '401|unauthorized|invalid.*key' "$RUNNER_TEMP/fleet-agent.log"; then
+              category=AUTH
+            elif grep -Eqi 'ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed' "$RUNNER_TEMP/fleet-agent.log"; then
+              category=NETWORK
+            fi
+            echo "OpenCode failed (exit=$rc, category=$category). Raw model log withheld." >&2
+          fi
+      - name: Validate scoped patch or emit failure evidence
+        if: always()
+        env:
+          FLEET_MANIFEST_JSON: ${{ inputs.manifest_json }}
+          FLEET_TELEMETRY_URL: ${{ needs.validate.outputs.telemetry_url }}
+          FLEET_TARGET: ${{ github.workspace }}/target
+          FLEET_RESULT: ${{ runner.temp }}/fleet-result
+          FLEET_ALLOWED_REPOS: ${{ needs.validate.outputs.allowlist }}
+          FLEET_AGENT_OK: ${{ steps.agent.outputs.ok }}
+        run: |
+          set -euo pipefail
+          test -n "$FLEET_ALLOWED_REPOS" || { echo 'Trusted validation output missing' >&2; exit 1; }
+          python3 runner/.github/scripts/oc_fleet_contract.py gate
+      - name: Store evidence only
+        if: always()
+        uses: actions/upload-artifact@v6
+        with:
+          name: fleet-${{ github.run_id }}-${{ github.run_attempt }}-${{ needs.validate.outputs.task_id }}
+          path: ${{ runner.temp }}/fleet-result/
+          retention-days: 3
+          if-no-files-found: warn
+
+  telemetry-probe:
+    needs: validate
+    if: inputs.run_mode == 'telemetry-probe'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+      - name: Verify signed event ingestion without a model
+        env:
+          FLEET_TELEMETRY_URL: ${{ needs.validate.outputs.telemetry_url }}
+          FLEET_TELEMETRY_PROBE: '1'
+        run: |
+          set -euo pipefail
+          test -n "$FLEET_TELEMETRY_URL"
+          printf '%s\n' '{"type":"step_start"}' '{"type":"step_finish","part":{"tokens":{"input":1,"output":1},"cost":0}}' |
+            python3 .github/scripts/oc_fleet_telemetry.py
