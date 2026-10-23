@@ -265,22 +265,10 @@ jobs:
           print(json.dumps(cfg, separators=(",", ":")))
           PY
           )"
-          # OpenCode's "debug config" output can be a diagnostic JSON list,
-          # not a config object. Keep its parsing check but verify our trusted
-          # generated config directly (no model call in this stage).
+          # Keep OpenCode CLI diagnostics as an exit-code check, independent
+          # of its version-dependent (object/list) JSON output shape.
           opencode debug config > /dev/null
-          python3 - <<'PY'
-          import json, os
-          selected=os.environ["FLEET_AGENT_ROLE"]
-          resolved=json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
-          if type(resolved) is not dict or resolved.get("default_agent") != selected:
-              raise SystemExit("Selected agent was overridden in generated configuration")
-          if selected != "build":
-              agents=resolved.get("agent")
-              agent=agents.get(selected, {}) if type(agents) is dict else {}
-              if agent.get("mode") not in ("primary","all") or not agent.get("prompt"):
-                  raise SystemExit("Selected primary agent unavailable in generated configuration")
-          PY
+          python3 "$GITHUB_WORKSPACE/runner/.github/scripts/oc_fleet_agent_runtime.py"
           start=$SECONDS
           set +e
           if [ -n "$FLEET_TELEMETRY_URL" ]; then
