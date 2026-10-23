@@ -265,20 +265,21 @@ jobs:
           print(json.dumps(cfg, separators=(",", ":")))
           PY
           )"
-          opencode debug config > "$RUNNER_TEMP/fleet-resolved-config.json"
-          # A missing or unavailable custom agent must fail closed rather than
-          # silently falling back to the generic build primary agent.
+          # OpenCode's "debug config" output can be a diagnostic JSON list,
+          # not a config object. Keep its parsing check but verify our trusted
+          # generated config directly (no model call in this stage).
+          opencode debug config > /dev/null
           python3 - <<'PY'
           import json, os
-          from pathlib import Path
           selected=os.environ["FLEET_AGENT_ROLE"]
-          resolved=json.loads((Path(os.environ["RUNNER_TEMP"])/"fleet-resolved-config.json").read_text())
-          if resolved.get("default_agent") != selected:
-              raise SystemExit("Selected agent was overridden in resolved configuration")
+          resolved=json.loads(os.environ["OPENCODE_CONFIG_CONTENT"])
+          if type(resolved) is not dict or resolved.get("default_agent") != selected:
+              raise SystemExit("Selected agent was overridden in generated configuration")
           if selected != "build":
-              agent=resolved.get("agent", {}).get(selected, {})
+              agents=resolved.get("agent")
+              agent=agents.get(selected, {}) if type(agents) is dict else {}
               if agent.get("mode") not in ("primary","all") or not agent.get("prompt"):
-                  raise SystemExit("Selected primary agent unavailable in resolved configuration")
+                  raise SystemExit("Selected primary agent unavailable in generated configuration")
           PY
           start=$SECONDS
           set +e
