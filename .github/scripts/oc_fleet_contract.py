@@ -223,7 +223,18 @@ def create_evidence(manifest, repo, output, run_id, attempt):
     return result
 
 
-def create_failure_evidence(manifest, output, run_id, attempt):
+FAILURE_CATEGORIES = frozenset({
+    "AGENT_ERROR", "AUTH", "NETWORK", "PROVIDER_ACCESS",
+    "QUOTA", "RATE_LIMIT", "TIMEOUT", "SCOPE_REJECTED",
+})
+
+
+def safe_failure_category(value):
+    """Allow only known codes, never raw model diagnostics."""
+    return value if type(value) is str and value in FAILURE_CATEGORIES else "AGENT_ERROR"
+
+
+def create_failure_evidence(manifest, output, run_id, attempt, failure_category=None):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     result = {
@@ -232,6 +243,7 @@ def create_failure_evidence(manifest, output, run_id, attempt):
         "issue_key": manifest["issue_key"], "run_id": str(run_id),
         "run_attempt": str(attempt), "outcome": "FAILED", "paths": [],
         "patch_sha256": None, "published": False,
+        "failure_category": safe_failure_category(failure_category),
     }
     (output / "result.json").write_text(json.dumps(result, sort_keys=True) + "\n", encoding="utf-8")
     return result
@@ -255,7 +267,8 @@ def cli():
     else:
         if os.environ.get("FLEET_AGENT_OK") != "true":
             create_failure_evidence(manifest, os.environ["FLEET_RESULT"],
-                                    os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"])
+                                    os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"],
+                                    os.environ.get("FLEET_FAILURE_CATEGORY"))
             raise ValueError("agent did not succeed; failure evidence recorded")
         try:
             result = create_evidence(manifest, os.environ["FLEET_TARGET"], os.environ["FLEET_RESULT"],
@@ -263,7 +276,8 @@ def cli():
         except (ValueError, TypeError, OSError, subprocess.CalledProcessError, UnicodeError) as error:
             # Fail closed, but always preserve bounded, non-publishing evidence.
             create_failure_evidence(manifest, os.environ["FLEET_RESULT"],
-                                    os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"])
+                                    os.environ["GITHUB_RUN_ID"], os.environ["GITHUB_RUN_ATTEMPT"],
+                                    "SCOPE_REJECTED")
             raise ValueError("scope gate: " + type(error).__name__ + ": " + str(error)[:160] + "; failure evidence recorded") from error
         print("Fleet evidence created for", len(result["paths"]), "file(s)")
 
