@@ -297,6 +297,7 @@ jobs:
           echo "seconds=$((SECONDS - start))" >> "$GITHUB_OUTPUT"
           if [ "$rc" -eq 0 ]; then
             echo 'ok=true' >> "$GITHUB_OUTPUT"
+            echo 'category=NONE' >> "$GITHUB_OUTPUT"
           else
             echo 'ok=false' >> "$GITHUB_OUTPUT"
             category=AGENT_ERROR
@@ -313,6 +314,7 @@ jobs:
             elif grep -Eqi 'ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed' "$RUNNER_TEMP/fleet-agent.log"; then
               category=NETWORK
             fi
+            echo "category=$category" >> "$GITHUB_OUTPUT"
             echo "OpenCode failed (exit=$rc, category=$category). Raw model log withheld." >&2
           fi
       - name: Validate scoped patch or emit failure evidence
@@ -324,6 +326,7 @@ jobs:
           FLEET_RESULT: ${{ runner.temp }}/fleet-result
           FLEET_ALLOWED_REPOS: ${{ needs.validate.outputs.allowlist }}
           FLEET_AGENT_OK: ${{ steps.agent.outputs.ok }}
+          FLEET_FAILURE_CATEGORY: ${{ steps.agent.outputs.category }}
         run: |
           set -euo pipefail
           test -n "$FLEET_ALLOWED_REPOS" || { echo 'Trusted validation output missing' >&2; exit 1; }
