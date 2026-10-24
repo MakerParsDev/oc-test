@@ -4,22 +4,18 @@ on:
     paths:
       - '.github/scripts/oc_fleet_agent_runtime.py'
       - '.github/scripts/oc_fleet_contract.py'
-      - '.github/scripts/test_oc_fleet_remote_provider.py'
       - '.github/scripts/test_oc_fleet_agent_runtime.py'
       - '.github/scripts/test_oc_fleet_failure_category.py'
       - '.github/workflows/oc-fleet-worker.yml'
-      - '.github/workflows/oc-fleet-tailnet-smoke.yml'
       - '.github/workflows/oc-fleet-agent-tests.yml'
   push:
     branches: [main]
     paths:
       - '.github/scripts/oc_fleet_agent_runtime.py'
       - '.github/scripts/oc_fleet_contract.py'
-      - '.github/scripts/test_oc_fleet_remote_provider.py'
       - '.github/scripts/test_oc_fleet_agent_runtime.py'
       - '.github/scripts/test_oc_fleet_failure_category.py'
       - '.github/workflows/oc-fleet-worker.yml'
-      - '.github/workflows/oc-fleet-tailnet-smoke.yml'
       - '.github/workflows/oc-fleet-agent-tests.yml'
 permissions:
   contents: read

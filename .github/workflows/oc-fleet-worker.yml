@@ -112,34 +112,6 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
-      - name: Verify Tailscale federated identity is configured
-        if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'
-        env:
-          FLEET_TS_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          FLEET_TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
-        run: |
-          set -euo pipefail
-          if [ -z "$FLEET_TS_CLIENT_ID" ] || [ -z "$FLEET_TS_AUDIENCE" ]; then
-            echo "::error::Private Ollama cannot start: Tailscale federated identity is not configured (TS_OAUTH_CLIENT_ID / TS_AUDIENCE). Configure GitHub repo secrets with a tag:ci-scoped Tailscale identity. No model call attempted."
-            exit 1
-          fi
-          echo "Tailscale CI identity fields present; authentication will be checked by the next step."
-      - name: Join private Tailnet for reviewed local Ollama
-        if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'
-        uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf
-        with:
-          oauth-client-id: ${{ secrets.TS_OAUTH_CLIENT_ID }}
-          audience: ${{ secrets.TS_AUDIENCE }}
-          tags: tag:ci
-      - name: Check private Ollama model before starting agent
-        if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'
-        env:
-          FLEET_OLLAMA_URL: https://amd2700x-ubuntu.morray-fort.ts.net:8443
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error --max-time 15 "$FLEET_OLLAMA_URL/api/version" >/dev/null
-          curl --fail --silent --show-error --max-time 15 "$FLEET_OLLAMA_URL/api/tags" |
-            python3 -c 'import sys,json; d=json.load(sys.stdin); assert any(x.get("name")=="qwen3:4b-instruct" for x in d.get("models",[])), "reviewed model unavailable"'
       - name: Install pinned OpenCode
         run: |
           set -euo pipefail
@@ -267,7 +239,7 @@ jobs:
           from pathlib import Path
           m=json.loads(os.environ["FLEET_MANIFEST_JSON"])
           sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"])/"runner/.github/scripts"))
-          from oc_fleet_contract import agent_configuration, provider_configuration
+          from oc_fleet_contract import agent_configuration
           cfg={
               "$schema": "https://opencode.ai/config.json",
               "model": os.environ["FLEET_MODEL"],
@@ -277,9 +249,6 @@ jobs:
           custom_agents=agent_configuration(m.get("agent", "build"))
           if custom_agents:
               cfg["agent"]=custom_agents
-          private_provider=provider_configuration(os.environ["FLEET_MODEL"])
-          if private_provider:
-              cfg["provider"]=private_provider
           if "context7" in m.get("integrations", []):
               if not os.getenv("CONTEXT7_API_KEY"):
                   raise SystemExit("Context7 selected but Doppler configuration missing")
