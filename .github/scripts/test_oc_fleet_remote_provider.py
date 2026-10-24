@@ -28,6 +28,23 @@ class ReviewedLocalProviderTests(unittest.TestCase):
             with self.subTest(model=repr(model)),self.assertRaises(ValueError):
                 provider_configuration(model)
 
+    def test_private_identity_missing_stops_before_tailnet_join(self):
+        y=(Path(__file__).parent.parent/"workflows"/"oc-fleet-worker.yml").read_text()
+        preflight=y.index("name: Verify Tailscale federated identity is configured")
+        join=y.index("name: Join private Tailnet for reviewed local Ollama")
+        agent=y.index("name: Execute unprivileged temporary agent")
+        self.assertLess(preflight,join)
+        self.assertLess(join,agent)
+        text=y[preflight:join]
+        self.assertIn("if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'",text)
+        self.assertIn("secrets.TS_OAUTH_CLIENT_ID",text)
+        self.assertIn("secrets.TS_AUDIENCE",text)
+        self.assertIn('if [ -z "$FLEET_TS_CLIENT_ID" ] || [ -z "$FLEET_TS_AUDIENCE" ]; then',text)
+        self.assertIn('exit 1',text)
+        self.assertNotIn('set -x',text)
+        self.assertNotIn('echo "$FLEET_TS_CLIENT_ID"',text)
+        self.assertNotIn('echo "$FLEET_TS_AUDIENCE"',text)
+
     def test_action_is_opt_in_and_uses_oidc_not_shared_authkey(self):
         y=(Path(__file__).parent.parent/"workflows"/"oc-fleet-worker.yml").read_text()
         self.assertIn("if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'",y)
