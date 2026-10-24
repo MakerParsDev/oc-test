@@ -20,7 +20,12 @@ ID_RE = re.compile(r"[a-z0-9][a-z0-9-]{1,47}\Z")
 ISSUE_RE = re.compile(r"[A-Z][A-Z0-9]{1,14}-[1-9][0-9]{0,9}\Z")
 SHA_RE = re.compile(r"[0-9a-f]{40}\Z")
 BRANCH_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._/-]{0,90}\Z")
-MODELS = frozenset({"opencode/big-pickle", "opencode/ling-3.1-flash-free", "opencode/nemotron-3-ultra-free"})
+REMOTE_MODEL = "ollama-remote/qwen3:4b-instruct"
+REMOTE_OLLAMA_URL = "https://amd2700x-ubuntu.morray-fort.ts.net:8443"
+MODELS = frozenset({
+    "opencode/big-pickle", "opencode/ling-3.1-flash-free",
+    "opencode/nemotron-3-ultra-free", REMOTE_MODEL,
+})
 PROFILES = frozenset({"base", "python-ruff", "security-semgrep"})
 AGENTS = frozenset({"build", "python-backend", "embedded-firmware", "security-review"})
 FORBIDDEN_PARTS = frozenset({".git", ".github", ".opencode", ".env", "node_modules", "__pycache__"})
@@ -47,6 +52,20 @@ AGENT_DESCRIPTIONS = {
         "claim scans or fixes that were not actually verified."
     ),
 }
+
+
+def provider_configuration(model):
+    """One approved private model, fixed endpoint; no user URL or secret interpolated."""
+    if model == REMOTE_MODEL:
+        return {"ollama-remote": {
+            "npm": "@ai-sdk/openai-compatible",
+            "name": "Ollama Tailnet Private",
+            "options": {"baseURL": REMOTE_OLLAMA_URL + "/v1"},
+            "models": {"qwen3:4b-instruct": {"name": "Qwen3 4B Instruct Private"}},
+        }}
+    if type(model) is str and model in MODELS:
+        return {}
+    raise ValueError("unapproved model")
 
 
 def agent_configuration(name):
