@@ -112,6 +112,18 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: '24'
+      - name: Verify Tailscale federated identity is configured
+        if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'
+        env:
+          FLEET_TS_CLIENT_ID: ${{ secrets.TS_OAUTH_CLIENT_ID }}
+          FLEET_TS_AUDIENCE: ${{ secrets.TS_AUDIENCE }}
+        run: |
+          set -euo pipefail
+          if [ -z "$FLEET_TS_CLIENT_ID" ] || [ -z "$FLEET_TS_AUDIENCE" ]; then
+            echo "::error::Private Ollama cannot start: Tailscale federated identity is not configured (TS_OAUTH_CLIENT_ID / TS_AUDIENCE). Configure GitHub repo secrets with a tag:ci-scoped Tailscale identity. No model call attempted."
+            exit 1
+          fi
+          echo "Tailscale CI identity fields present; authentication will be checked by the next step."
       - name: Join private Tailnet for reviewed local Ollama
         if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'
         uses: tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf
