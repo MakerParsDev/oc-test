@@ -1,0 +1,64 @@
+name: OpenCode four-parallel agent file edit acceptance (manual)
+on:
+  workflow_dispatch:
+permissions: {}
+jobs:
+  edit-with-free-cloud:
+    if: github.repository == 'MakerParsDev/oc-test' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      max-parallel: 4
+      matrix:
+        slot: [1, 2, 3, 4]
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Install official OpenCode 2.1.4
+        run: npm install --global --no-audit --no-fund '@opencode/cli@2.1.4'
+      - name: Verify real edit tools in four isolated GitHub runners
+        env:
+          FLEET_SLOT: ${{ matrix.slot }}
+        run: |
+          set -euo pipefail
+          scratch="$RUNNER_TEMP/free-agent-edit-$FLEET_SLOT"
+          mkdir -m 700 -p "$scratch/work" "$scratch/config" "$scratch/data" "$scratch/cache"
+          export XDG_CONFIG_HOME="$scratch/config"
+          export XDG_DATA_HOME="$scratch/data"
+          export XDG_CACHE_HOME="$scratch/cache"
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled","permission":{"bash":"deny","external_directory":"deny","edit":"allow","read":"allow"}}'
+          cd "$scratch/work"
+          cat > calculator.py <<'PY'
+          def is_even(n: int) -> bool:
+              return n % 2 == 1
+          PY
+          set +e
+          timeout --signal=TERM --kill-after=5s 120s opencode run --standalone \
+            --model opencode/big-pickle --agent build --format default \
+            'Read calculator.py with the read tool, then use the edit tool to correct is_even so it returns True for even integers and False for odd integers. Edit calculator.py in place. Do not use shell tools and do not add any other file. After successful edit, reply DONE.' \
+            >"$scratch/opencode.log" 2>&1
+          rc=$?
+          set -e
+          echo "FLEET_AGENT_SLOT=$FLEET_SLOT EXIT=$rc"
+          test "$rc" -eq 0 || { echo "::error::Agent exited $rc; raw model output withheld."; exit 1; }
+          python3 - <<'PY'
+          from pathlib import Path
+          path=Path("calculator.py")
+          text=path.read_text()
+          assert text != "def is_even(n: int) -> bool:\n    return n % 2 == 1\n", "No actual file edit"
+          ctx={}
+          exec(compile(text,str(path),"exec"),ctx)
+          assert [ctx["is_even"](i) for i in (-4,-3,0,1,2,13)] == [True,False,True,False,True,False]
+          files=sorted(p.name for p in Path(".").rglob("*") if p.is_file())
+          assert files==["calculator.py"], f"Unexpected files created: {files}"
+          PY
+          {
+            echo "### GitHub-hosted OpenCode real edit acceptance"
+            echo "- Slot: `$FLEET_SLOT` / 4"
+            echo "- Official OpenCode 2.1.4 / free Big Pickle"
+            echo "- Actual sandbox file edit and Python function tests: PASS"
+            echo "- No source checkout, PR, model key, local GPU or artifact upload"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "FLEET_AGENT_EDIT_VERIFIED slot=$FLEET_SLOT"

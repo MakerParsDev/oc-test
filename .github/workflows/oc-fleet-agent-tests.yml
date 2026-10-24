@@ -7,8 +7,10 @@ on:
       - '.github/scripts/test_oc_fleet_agent_runtime.py'
       - '.github/scripts/test_oc_fleet_failure_category.py'
       - '.github/scripts/test_oc_fleet_free_cloud_smoke.py'
+      - '.github/scripts/test_oc_fleet_parallel_agent_smoke.py'
       - '.github/workflows/oc-fleet-worker.yml'
       - '.github/workflows/oc-fleet-free-model-smoke.yml'
+      - '.github/workflows/oc-fleet-parallel-agent-smoke.yml'
       - '.github/workflows/oc-fleet-agent-tests.yml'
   push:
     branches: [main]
@@ -18,8 +20,10 @@ on:
       - '.github/scripts/test_oc_fleet_agent_runtime.py'
       - '.github/scripts/test_oc_fleet_failure_category.py'
       - '.github/scripts/test_oc_fleet_free_cloud_smoke.py'
+      - '.github/scripts/test_oc_fleet_parallel_agent_smoke.py'
       - '.github/workflows/oc-fleet-worker.yml'
       - '.github/workflows/oc-fleet-free-model-smoke.yml'
+      - '.github/workflows/oc-fleet-parallel-agent-smoke.yml'
       - '.github/workflows/oc-fleet-agent-tests.yml'
 permissions:
   contents: read
