@@ -1,0 +1,80 @@
+name: OpenCode free-cloud model diagnostic (manual)
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: 'One free model per diagnostic run (no fallback)'
+        type: choice
+        required: true
+        default: opencode/big-pickle
+        options:
+          - opencode/big-pickle
+          - opencode/nemotron-3-ultra-free
+          - opencode/deepseek-v4.1-flash-free
+permissions: {}
+jobs:
+  free-model-probe:
+    if: github.repository == 'MakerParsDev/oc-test' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '24'
+      - name: Install official pinned OpenCode CLI
+        run: |
+          set -euo pipefail
+          npm install --global --no-audit --no-fund '@opencode/cli@2.1.4'
+          opencode --version
+      - name: Single bounded free-model request (no repository checkout)
+        env:
+          FLEET_SMOKE_MODEL: ${{ inputs.model }}
+        run: |
+          set -euo pipefail
+          case "$FLEET_SMOKE_MODEL" in
+            opencode/big-pickle|opencode/nemotron-3-ultra-free|opencode/deepseek-v4.1-flash-free) ;;
+            *) echo "::error::Unapproved free model"; exit 2 ;;
+          esac
+          scratch="$RUNNER_TEMP/cloud-free-model"
+          mkdir -p "$scratch/work" "$scratch/config" "$scratch/data" "$scratch/cache"
+          export XDG_CONFIG_HOME="$scratch/config"
+          export XDG_DATA_HOME="$scratch/data"
+          export XDG_CACHE_HOME="$scratch/cache"
+          # Preserve official CLI default tool permissions: upstream free-tier
+          # 403 reports identify deny-all/read/bash rules as a possible cause.
+          export OPENCODE_CONFIG_CONTENT='{"share":"disabled"}'
+          cd "$scratch/work"
+          set +e
+          timeout --signal=TERM --kill-after=5s 90s opencode run --standalone \
+            --model "$FLEET_SMOKE_MODEL" --agent build --format default \
+            'Reply exactly: CLOUD_PROVIDER_SMOKE_OK. Do not call any tools.' \
+            >"$scratch/model.log" 2>&1
+          rc=$?
+          set -e
+          category=OTHER
+          if [ "$rc" -eq 0 ] && grep -Fq 'CLOUD_PROVIDER_SMOKE_OK' "$scratch/model.log"; then
+            category=SUCCESS
+          elif [ "$rc" -eq 124 ] || [ "$rc" -eq 137 ]; then
+            category=TIMEOUT
+          elif grep -Eqi 'free tier can only|FreeTierError|provider.access|403|forbidden' "$scratch/model.log"; then
+            category=PROVIDER_ACCESS
+          elif grep -Eqi 'freeusagelimit|429|rate.limit|too many requests' "$scratch/model.log"; then
+            category=RATE_LIMIT
+          elif grep -Eqi 'quota|insufficient.*credits|billing|payment required|402' "$scratch/model.log"; then
+            category=QUOTA
+          elif grep -Eqi '401|unauthorized|invalid.*key' "$scratch/model.log"; then
+            category=AUTH
+          elif grep -Eqi 'ENOTFOUND|ECONNRESET|ETIMEDOUT|fetch failed' "$scratch/model.log"; then
+            category=NETWORK
+          fi
+          {
+            echo "### OpenCode free-model diagnostic"
+            echo "- Official OpenCode CLI: `$(opencode --version)`"
+            echo "- Selected free model: `$FLEET_SMOKE_MODEL`"
+            echo "- Result: `$category`"
+            echo "- CLI exit: `$rc`"
+            echo "- No repository checkout, GitHub token, provider key, code mutation, or fallback"
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "FREE_MODEL_DIAGNOSTIC category=$category cli_exit=$rc"
+          # Never print or upload untrusted model/provider responses or keys.
+          test "$category" = SUCCESS || { echo "::error::OpenCode free-model request failed: $category"; exit 1; }
