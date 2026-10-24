@@ -1,6 +1,7 @@
 """Offline regression tests for agent-selection config, without a model call."""
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import patch
 
@@ -9,6 +10,18 @@ from oc_fleet_agent_runtime import main, validate_agent_config
 
 
 class AgentConfigRuntimeTests(unittest.TestCase):
+    def test_worker_cli_version_matches_proven_free_model_probe(self):
+        workflows=Path(__file__).parent.parent/"workflows"
+        worker=(workflows/"oc-fleet-worker.yml").read_text()
+        smoke=(workflows/"oc-fleet-free-model-smoke.yml").read_text()
+        # This exact CLI version produced a free cloud model answer on
+        # GitHub-hosted Actions run 40047617076. No local model required.
+        self.assertIn("@opencode/cli@2.1.4",worker)
+        self.assertIn("@opencode/cli@2.1.4",smoke)
+        self.assertNotIn("@opencode/cli@2.0.27",worker)
+        self.assertNotIn("ollama",worker.lower())
+        self.assertNotIn("tailscale",worker.lower())
+
     def test_each_reviewed_role_passes_with_exact_generated_config(self):
         for selected in AGENTS:
             with self.subTest(selected=selected):
