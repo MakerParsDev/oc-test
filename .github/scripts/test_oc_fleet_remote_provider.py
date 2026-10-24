@@ -45,6 +45,25 @@ class ReviewedLocalProviderTests(unittest.TestCase):
         self.assertNotIn('echo "$FLEET_TS_CLIENT_ID"',text)
         self.assertNotIn('echo "$FLEET_TS_AUDIENCE"',text)
 
+    def test_manual_tailnet_smoke_is_read_only_and_never_starts_models(self):
+        y=(Path(__file__).parent.parent/"workflows"/"oc-fleet-tailnet-smoke.yml").read_text()
+        self.assertIn("workflow_dispatch:",y)
+        self.assertIn("github.ref == 'refs/heads/main'",y)
+        self.assertIn("id-token: write",y)
+        self.assertIn("tailscale/github-action@99a8333667fff04fdd6cffb46dfd409f8329a7bf",y)
+        self.assertIn("secrets.TS_OAUTH_CLIENT_ID",y)
+        self.assertIn("secrets.TS_AUDIENCE",y)
+        self.assertIn("tag:ci",y)
+        self.assertIn("/api/version",y)
+        self.assertIn("/api/tags",y)
+        self.assertNotIn("/api/chat",y)
+        self.assertNotIn("/api/generate",y)
+        self.assertNotIn("opencode run",y)
+        self.assertNotIn("gh workflow run",y)
+        self.assertNotIn("funnel",y.lower())
+        self.assertNotIn("on: push",y)
+        self.assertNotIn("pull_request:",y)
+
     def test_action_is_opt_in_and_uses_oidc_not_shared_authkey(self):
         y=(Path(__file__).parent.parent/"workflows"/"oc-fleet-worker.yml").read_text()
         self.assertIn("if: needs.validate.outputs.model == 'ollama-remote/qwen3:4b-instruct'",y)
