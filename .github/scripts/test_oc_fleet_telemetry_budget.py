@@ -32,6 +32,26 @@ class TelemetryBudgetTest(unittest.TestCase):
         self.assertEqual(stats["accepted"], 3)
         self.assertEqual(stats["sent"], 0)
 
+    def test_malformed_types_before_and_after_cap_do_not_stop_drain(self):
+        lines = [
+            b'{"type":[]}\n',
+            b'{"type":"tool_use","part":{"tool":"read","state":{"status":[]}}}\n',
+            b'{"type":"step_start"}\n',
+            b'{"type":[]}\n',
+            b'{"type":"step_finish","part":{"tokens":{"input":123}}}\n',
+        ]
+        stats = {}
+        with patch.object(telemetry, "MAX_EVENTS", 2):
+            accepted = telemetry.forward(iter(lines), run_id="123456", attempt="1",
+                                         endpoint="", stats=stats)
+        self.assertEqual(accepted, 2)
+        self.assertEqual(stats["lines"], len(lines))
+        self.assertEqual(stats["accepted"], 2)
+        status = telemetry.normalise({"type": "tool_use", "part": {
+            "tool": "read", "state": {"status": []}}})
+        self.assertEqual(status["status"], "unknown")
+        self.assertIsNone(telemetry.normalise({"type": []}))
+
     def test_event_cap_preserves_order_and_sanitization(self):
         source = MeasuredSource(7)
         sent = []
