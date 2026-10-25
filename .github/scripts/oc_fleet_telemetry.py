@@ -31,7 +31,8 @@ def number(x, max_value=10**12):
 
 def normalise(value):
     """Return ONLY audited primitives. Unrecognised event payloads are ignored."""
-    if not isinstance(value, dict) or value.get("type") not in ALLOWED:
+    if (not isinstance(value, dict) or not isinstance(value.get("type"), str)
+            or value["type"] not in ALLOWED):
         return None
     part = value.get("part")
     if not isinstance(part, dict):
@@ -44,7 +45,8 @@ def normalise(value):
             tool = "other"
         state = part.get("state", {})
         status = state.get("status") if isinstance(state, dict) else None
-        item.update(tool=tool, status=status if status in SAFE_STATUS else "unknown")
+        item.update(tool=tool, status=(status if isinstance(status, str)
+                                       and status in SAFE_STATUS else "unknown"))
     if kind == "step_finish":
         tok = part.get("tokens", {})
         if isinstance(tok, dict):
@@ -143,6 +145,10 @@ def forward(stdin=None, sender=None, *, run_id=None, attempt=None,
     offline_until = 0.0
     for line in stdin:
         stats["lines"] += 1
+        # Always consume OpenCode stdout even after the telemetry quota.
+        # Discard excess lines without parsing, storing, or forwarding them.
+        if seq >= MAX_EVENTS:
+            continue
         if len(line) > MAX_LINE:
             continue
         try:
@@ -151,10 +157,6 @@ def forward(stdin=None, sender=None, *, run_id=None, attempt=None,
             continue
         item = normalise(content)
         if item is None:
-            continue
-        # Do not close OpenCode's stdout pipe when the telemetry quota is full.
-        # Keep draining input, but never retain or publish events past the cap.
-        if seq >= MAX_EVENTS:
             continue
         seq += 1
         stats["accepted"] += 1
