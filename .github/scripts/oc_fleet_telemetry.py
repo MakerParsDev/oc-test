@@ -152,10 +152,12 @@ def forward(stdin=None, sender=None, *, run_id=None, attempt=None,
         item = normalise(content)
         if item is None:
             continue
+        # Do not close OpenCode's stdout pipe when the telemetry quota is full.
+        # Keep draining input, but never retain or publish events past the cap.
+        if seq >= MAX_EVENTS:
+            continue
         seq += 1
         stats["accepted"] += 1
-        if seq > MAX_EVENTS:
-            break
         item.update(run_id=run_id, attempt=attempt, seq=seq)
         pending.append(item)
         if (endpoint and time.monotonic() >= offline_until and
